@@ -20,18 +20,17 @@ At-bat outcome logic (decided with the user 2026-07-01):
   4 balls → Walk; 3 strikes → Strikeout; in-play → at-bat ends.
 
 End-of-at-bat report: pitch-type identification accuracy and swing/take
-decision accuracy (no external baseline — raw accuracy only, per user
-decision 2026-07-01).
+decision accuracy (no external baseline — raw accuracy only).
 
 Countdown enforcement via streamlit-autorefresh (100ms reruns + elapsed
-time check against session_state timestamp) — no JS→Python bridge needed.
+time check against session_state timestamp).
 
-Windowing rule for pitch trajectories (same as derive_zone.py and
-build_game_pitches.py): window ends at the first ball_eventcode 2 (Ball
-Acquired) or 4 (Ball Hit Into Play) after the Pitch event (code 1).
+Trajectories are pre-baked in Data/derived/pitcher_pools.json by
+scripts/build_pitcher_pools.py (run locally once; JSON committed to git
+so the app works on Streamlit Cloud without the raw ball-positions data).
 """
+import json
 import os
-import re
 import time
 import random
 
@@ -41,17 +40,13 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(REPO_ROOT, "Data")
-DERIVED = os.path.join(DATA_DIR, "derived")
+DERIVED = os.path.join(REPO_ROOT, "Data", "derived")
 
 PITCHER_MIN_PITCHES = 40
 COUNTDOWN_S = 3
 ANIM_DURATION_MS = 1200
-MAX_FRAMES = 45
 ZONE_HEIGHT = (1.5, 3.5)
 ZONE_WIDTH = (-0.708, 0.708)
-
-GAME_STRING_RE = re.compile(r"^(y\d+)_(d[\d.]+)_([A-Za-z]+)_([A-Za-z]+)$")
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -62,125 +57,17 @@ def load_arsenals() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_eligible_pitchers() -> pd.DataFrame:
-    """One row per pitcher with total_pitches >= PITCHER_MIN_PITCHES."""
-    arsenals = load_arsenals()
-    totals = arsenals[["pitcher", "total_pitches"]].drop_duplicates()
-    return totals[totals["total_pitches"] >= PITCHER_MIN_PITCHES].reset_index(drop=True)
+def load_pitcher_pools() -> dict:
+    """Pre-built pitcher→pitch-pool mapping from build_pitcher_pools.py.
+    Keyed by pitcher_id; each value is a list of pitch dicts with frames
+    already embedded — no raw ball-positions data needed at runtime."""
+    with open(os.path.join(DERIVED, "pitcher_pools.json")) as f:
+        return json.load(f)
 
 
-@st.cache_data
-def load_pitch_index() -> pd.DataFrame:
-    """pitch_type.csv joined to pitch_zone.csv — one row per pitch with
-    pitch_type_label and zone. Cached globally; filtered per pitcher at
-    game-start."""
-    pt = pd.read_csv(os.path.join(DERIVED, "pitch_type.csv"),
-                     usecols=["game_string", "play_per_game", "pitcher",
-                               "release_speed_mph", "pitch_type_label"])
-    pz = pd.read_csv(os.path.join(DERIVED, "pitch_zone.csv"),
-                     usecols=["game_string", "play_per_game",
-                               "plate_x", "plate_z", "zone"])
-    return pt.merge(pz, on=["game_string", "play_per_game"], how="inner")
-
-
-# ── Trajectory helpers ────────────────────────────────────────────────────────
-
-def _partition_path(game_string: str, dataset: str) -> str | None:
-    m = GAME_STRING_RE.match(game_string)
-    if not m:
-        return None
-    year, day, away, home = m.groups()
-    fname = "ball_events.csv" if dataset == "ball-events" else "ball-positions.csv"
-    return os.path.join(DATA_DIR, dataset, home, away, year, day, fname)
-
-
-def _pitch_window(be: pd.DataFrame, play_per_game) -> tuple | None:
-    """Return (t_release, t_end) for one play. Window rule mirrors
-    derive_zone.py / build_game_pitches.py: end at the first code 2 or 4
-    strictly after the Pitch event (code 1)."""
-    play = be[be["play_per_game"] == play_per_game]
-    pitch_rows = play[play["ball_eventcode"] == 1]
-    if pitch_rows.empty:
-        return None
-    t_release = pitch_rows["timestamp"].min()
-    end_events = play[
-        (play["timestamp"] > t_release) &
-        (play["ball_eventcode"].isin([2, 4]))
-    ]
-    if end_events.empty:
-        return None
-    return t_release, end_events["timestamp"].min()
-
-
-def _downsample(frames: list, n: int) -> list:
-    if len(frames) <= n:
-        return frames
-    step = len(frames) / n
-    return [frames[int(i * step)] for i in range(n)]
-
-
-def load_pitcher_pitch_pool(pitcher_id: str) -> list[dict]:
-    """Load all pitch data (including real trajectory frames) for one pitcher.
-    Called once at game-start; result is stored in session_state."""
-    index = load_pitch_index()
-    rows = index[index["pitcher"] == pitcher_id].copy()
-
-    be_cache: dict[str, pd.DataFrame | None] = {}
-    bp_cache: dict[str, pd.DataFrame | None] = {}
-
-    pool = []
-    for _, row in rows.iterrows():
-        gs = row["game_string"]
-        ppg = row["play_per_game"]
-
-        if gs not in be_cache:
-            path = _partition_path(gs, "ball-events")
-            be_cache[gs] = pd.read_csv(path) if path and os.path.exists(path) else None
-        if gs not in bp_cache:
-            path = _partition_path(gs, "ball-positions")
-            if path and os.path.exists(path):
-                df = pd.read_csv(path)
-                df = df[df["ball_position_z"].between(-1, 200)]
-                bp_cache[gs] = df
-            else:
-                bp_cache[gs] = None
-
-        be = be_cache[gs]
-        bp = bp_cache[gs]
-        if be is None or bp is None:
-            continue
-
-        window = _pitch_window(be, ppg)
-        if window is None:
-            continue
-        t_release, t_end = window
-
-        play_bp = (
-            bp[(bp["play_per_game"] == ppg) &
-               (bp["timestamp"] >= t_release) &
-               (bp["timestamp"] <= t_end)]
-            .sort_values("timestamp")
-        )
-        if len(play_bp) < 3:
-            continue
-
-        frames = _downsample(
-            play_bp[["ball_position_x", "ball_position_y",
-                      "ball_position_z"]].values.tolist(),
-            MAX_FRAMES,
-        )
-        pool.append({
-            "game_string": gs,
-            "play_per_game": int(ppg),
-            "pitch_type_label": row["pitch_type_label"],
-            "zone": row["zone"],
-            "plate_x": round(float(row["plate_x"]), 4),
-            "plate_z": round(float(row["plate_z"]), 4),
-            "release_speed_mph": round(float(row["release_speed_mph"]), 1),
-            "frames": [[round(v, 3) for v in f] for f in frames],
-        })
-
-    return pool
+def load_eligible_pitchers() -> list[str]:
+    pools = load_pitcher_pools()
+    return list(pools.keys())
 
 
 # ── Game logic ────────────────────────────────────────────────────────────────
@@ -363,8 +250,7 @@ def _record(pitch: dict, id_guess: str | None, swing_take: str):
 
 
 def init_game(pitcher_id: str):
-    with st.spinner(f"Loading {pitcher_id}'s pitches…"):
-        pool = load_pitcher_pitch_pool(pitcher_id)
+    pool = list(load_pitcher_pools()[pitcher_id])
 
     if len(pool) < 6:
         st.error("Not enough pitchable data for this pitcher. Pick another.")
@@ -408,7 +294,7 @@ def render_start():
     )
 
     eligible = load_eligible_pitchers()
-    pitcher_id = random.choice(eligible["pitcher"].tolist())
+    pitcher_id = random.choice(eligible)
 
     arsenal = load_arsenals()
     pitcher_arsenal = arsenal[arsenal["pitcher"] == pitcher_id].sort_values(

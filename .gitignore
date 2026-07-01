@@ -1,9 +1,13 @@
-# Raw tracking data is too large for git (player-positions/ alone is ~3GB,
-# ball-positions/ ~124MB). Obtain it directly from the SMT Data Challenge if
-# you need to re-run scripts/derive_zone.py or build_game_pitches.py from
-# scratch -- Data/derived/ already has everything app.py needs to run.
+# Raw SMT Data Challenge files -- not committed to git.
+# Re-derive from these locally if pipeline scripts need to be re-run.
+# Data/derived/ has all the pre-built outputs app.py needs at runtime.
 Data/ball-positions/
+Data/ball-events/
 Data/player-positions/
+Data/lineups.csv
+Data/game-info.csv
+Data/SMT-Data-Challenge-Data-Description-2026.pdf
+Data/SMT_Data_Starter.py
 
 # Python
 __pycache__/
