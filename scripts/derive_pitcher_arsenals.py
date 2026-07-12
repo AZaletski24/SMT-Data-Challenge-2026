@@ -22,6 +22,19 @@ MIN_PITCH_TYPE_COUNT = 5
 MIN_PITCH_TYPE_PCT = 0.05
 
 
+def infer_throws(pt: pd.DataFrame) -> pd.Series:
+    """Infer pitcher handedness from arm-side break direction.
+    Top-quartile-velocity pitches (fastball-like) break toward the pitcher's
+    arm side: positive x (first-base side) = RHP, negative = LHP."""
+    def _throws(group):
+        q75 = group["release_speed_mph"].quantile(0.75)
+        mean_hb = group.loc[group["release_speed_mph"] >= q75, "hb_in"].mean()
+        # Pitcher and catcher face each other, so RHP arm-side = catcher's LEFT
+        # = negative x in this dataset (left field = negative x = 3B side).
+        return "R" if mean_hb < 0 else "L"
+    return pt.groupby("pitcher").apply(_throws, include_groups=False).rename("throws")
+
+
 def main():
     pt = pd.read_csv(IN_PATH)
 
@@ -46,6 +59,9 @@ def main():
         (agg["count"] >= MIN_PITCH_TYPE_COUNT) &
         (agg["usage_pct"] >= MIN_PITCH_TYPE_PCT)
     ].copy()
+
+    throws = infer_throws(pt)
+    agg = agg.merge(throws, on="pitcher", how="left")
 
     agg = agg.sort_values(["pitcher", "usage_pct"], ascending=[True, False])
 

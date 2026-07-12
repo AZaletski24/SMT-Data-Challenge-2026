@@ -48,6 +48,15 @@ ANIM_DURATION_MS = 1200
 ZONE_HEIGHT = (1.5, 3.5)
 ZONE_WIDTH = (-0.708, 0.708)
 
+PITCH_COLORS = {
+    "Fastball":  "#ef4444",
+    "Sinker":    "#f97316",
+    "Cutter":    "#a855f7",
+    "Slider":    "#3b82f6",
+    "Curveball": "#06b6d4",
+    "Changeup":  "#22c55e",
+}
+
 
 # ── Data loading ─────────────────────────────────────────────────────────────
 
@@ -208,6 +217,105 @@ if (DATA.mode==='throw') {{
 </script>"""
 
 
+def _arsenal_canvas_html(pool: list) -> str:
+    """Static canvas showing one representative trajectory per pitch type,
+    colour-coded by PITCH_COLORS. The representative is the pitch whose
+    plate landing (plate_x, plate_z) is closest to that type's centroid —
+    i.e. the most average example of what that pitch looks like."""
+    import json as _j
+    import numpy as _np
+
+    def _representative(pitches: list) -> dict:
+        pts = _np.array([[p["plate_x"], p["plate_z"]] for p in pitches])
+        centroid = pts.mean(axis=0)
+        idx = int(_np.linalg.norm(pts - centroid, axis=1).argmin())
+        return pitches[idx]
+
+    arsenal_data = {}
+    for pt, color in PITCH_COLORS.items():
+        bucket = [p for p in pool if p["pitch_type_label"] == pt]
+        if bucket:
+            rep = _representative(bucket)
+            arsenal_data[pt] = {"color": color, "pitches": [rep["frames"]]}
+
+    payload = _j.dumps({
+        "zone_height": list(ZONE_HEIGHT),
+        "zone_width":  list(ZONE_WIDTH),
+        "arsenal":     arsenal_data,
+    })
+    return f"""
+<canvas id="ac" width="380" height="460"
+  style="display:block;margin:0 auto;border-radius:8px"></canvas>
+<script>
+const D={payload};
+const cv=document.getElementById('ac'),ctx=cv.getContext('2d');
+const W=cv.width,H=cv.height;
+const CAM={{x:0,y:-3.5,z:3.5}};
+const F=160,CX=W/2,CY=160,HZ=CY,DY=CY+70;
+function proj(x,y,z){{
+  const dy=y-CAM.y; if(dy<=0.1) return null;
+  return {{sx:CX+F*(x-CAM.x)/dy, sy:CY-F*(z-CAM.z)/dy}};
+}}
+function field(){{
+  ctx.clearRect(0,0,W,H);
+  let g=ctx.createLinearGradient(0,0,0,HZ);
+  g.addColorStop(0,'#07111e');g.addColorStop(0.45,'#0f2d52');g.addColorStop(1,'#1e5490');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,HZ);
+  g=ctx.createLinearGradient(0,HZ,0,DY);
+  g.addColorStop(0,'#1b4a17');g.addColorStop(1,'#2c7028');
+  ctx.fillStyle=g;ctx.fillRect(0,HZ,W,DY-HZ);
+  g=ctx.createLinearGradient(0,DY,0,H);
+  g.addColorStop(0,'#7a4d2f');g.addColorStop(0.5,'#6b4228');g.addColorStop(1,'#563318');
+  ctx.fillStyle=g;ctx.fillRect(0,DY,W,H-DY);
+  ctx.lineWidth=1.2;ctx.strokeStyle='rgba(240,240,220,0.18)';
+  ctx.beginPath();ctx.moveTo(0,H);ctx.lineTo(CX,HZ);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(W,H);ctx.lineTo(CX,HZ);ctx.stroke();
+  const pp=[[-0.708,0.08,0],[0.708,0.08,0],[0.708,-0.42,0],[0,-0.71,0],[-0.708,-0.42,0]]
+    .map(([x,y,z])=>proj(x,y,z)).filter(Boolean);
+  if(pp.length===5){{ctx.fillStyle='#f2f2f2';ctx.strokeStyle='#bbb';ctx.lineWidth=1.5;
+    ctx.beginPath();pp.forEach((p,i)=>i===0?ctx.moveTo(p.sx,p.sy):ctx.lineTo(p.sx,p.sy));
+    ctx.closePath();ctx.fill();ctx.stroke();}}
+  ctx.strokeStyle='rgba(245,245,230,0.65)';ctx.lineWidth=1.8;
+  [[[-1.7,-0.75,0],[-0.708,-0.75,0],[-0.708,0.5,0],[-1.7,0.5,0]],
+   [[0.708,-0.75,0],[1.7,-0.75,0],[1.7,0.5,0],[0.708,0.5,0]]
+  ].forEach(cs=>{{const pts=cs.map(([x,y,z])=>proj(x,y,z)).filter(Boolean);
+    if(pts.length===4){{ctx.beginPath();pts.forEach((p,i)=>i===0?ctx.moveTo(p.sx,p.sy):ctx.lineTo(p.sx,p.sy));ctx.closePath();ctx.stroke();}}}});
+}}
+function zone(){{
+  const[zb,zt]=D.zone_height,[zl,zr]=D.zone_width;
+  const tl=proj(zl,0,zt),tr=proj(zr,0,zt),bl=proj(zl,0,zb);
+  if(tl&&tr&&bl){{
+    const zx=tl.sx,zy=tl.sy,zw=tr.sx-tl.sx,zh=bl.sy-tl.sy;
+    ctx.fillStyle='rgba(233,196,106,0.07)';ctx.fillRect(zx,zy,zw,zh);
+    ctx.strokeStyle='#e9c46a';ctx.lineWidth=2.5;ctx.setLineDash([6,4]);
+    ctx.strokeRect(zx,zy,zw,zh);ctx.setLineDash([]);
+    ctx.fillStyle='#e9c46a';ctx.font='bold 10px monospace';
+    ctx.textAlign='center';ctx.fillText('STRIKE ZONE',zx+zw/2,zy-8);
+  }}
+}}
+field(); zone();
+for(const[type,data]of Object.entries(D.arsenal)){{
+  data.pitches.forEach(frames=>{{
+    const pts=frames.map(([x,y,z])=>proj(x,y,z)).filter(Boolean);
+    if(pts.length<2)return;
+    ctx.strokeStyle=data.color+'55';ctx.lineWidth=1.2;
+    ctx.beginPath();pts.forEach((p,i)=>i===0?ctx.moveTo(p.sx,p.sy):ctx.lineTo(p.sx,p.sy));
+    ctx.stroke();
+    const ep=pts[pts.length-1];
+    ctx.beginPath();ctx.arc(ep.sx,ep.sy,3.5,0,Math.PI*2);
+    ctx.fillStyle=data.color;ctx.fill();
+  }});
+}}
+let lx=12,ly=20;ctx.font='bold 11px monospace';ctx.textBaseline='middle';
+for(const[type,data]of Object.entries(D.arsenal)){{
+  ctx.fillStyle=data.color;
+  ctx.beginPath();ctx.arc(lx+5,ly,5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.9)';ctx.textAlign='left';
+  ctx.fillText(type,lx+14,ly);ly+=18;
+}}
+</script>"""
+
+
 # ── Session state helpers ─────────────────────────────────────────────────────
 
 def _next_pitch():
@@ -283,15 +391,115 @@ def _show_count():
 
 # ── Phase renderers ───────────────────────────────────────────────────────────
 
+def get_demo_content() -> tuple[dict, list[str]]:
+    """Pick a demo pitch and pitch-type button list for the tutorial.
+    Prefers a pitcher with multiple types and an in-zone pitch."""
+    pools    = load_pitcher_pools()
+    arsenals = load_arsenals()
+    n_types  = arsenals.groupby("pitcher").size().sort_values(ascending=False)
+    for pid in n_types.index:
+        if pid not in pools:
+            continue
+        in_zone = [p for p in pools[pid] if p["zone"] == "in_zone"]
+        if in_zone:
+            pitch      = in_zone[0]
+            pitch_types = (
+                arsenals[arsenals["pitcher"] == pid]
+                .sort_values("usage_pct", ascending=False)["pitch_type_label"]
+                .tolist()
+            )
+            return pitch, pitch_types
+    # Fallback
+    pid = list(pools.keys())[0]
+    return pools[pid][0], arsenals[arsenals["pitcher"] == pid]["pitch_type_label"].tolist()
+
+
+def render_demo():
+    """Auto-advancing tutorial. Only user input: clicking 'Got it' at the end."""
+    if "demo_phase" not in st.session_state:
+        pitch, pitch_types = get_demo_content()
+        st.session_state.demo_phase      = "animation"
+        st.session_state.demo_pitch      = pitch
+        st.session_state.demo_types      = pitch_types
+        st.session_state.demo_phase_start = time.time()
+
+    pitch       = st.session_state.demo_pitch
+    pitch_types = st.session_state.demo_types
+    phase       = st.session_state.demo_phase
+    elapsed     = time.time() - st.session_state.demo_phase_start
+
+    def _advance(next_phase):
+        st.session_state.demo_phase       = next_phase
+        st.session_state.demo_phase_start = time.time()
+        st.rerun()
+
+    st.title("How to Play")
+
+    if phase == "animation":
+        st_autorefresh(interval=100, key="demo_anim_refresh")
+        st.markdown("**Step 1 — Watch the pitch fly in.**")
+        st.caption("The real 20Hz ball-tracking data animates the pitch from the mound to the plate.")
+        components.html(_canvas_html(pitch, "throw"), height=470)
+        if elapsed >= ANIM_DURATION_MS / 1000 + 0.8:
+            _advance("pitch_type")
+
+    elif phase == "pitch_type":
+        st_autorefresh(interval=100, key="demo_pt_refresh")
+        remaining = max(0.0, COUNTDOWN_S - elapsed)
+        st.markdown("**Step 2 — Identify the pitch type.** You have 3 seconds.")
+        if remaining > 0:
+            st.progress(remaining / COUNTDOWN_S, text=f"⏱ {remaining:.1f}s")
+            n_cols = min(len(pitch_types), 3)
+            cols   = st.columns(n_cols)
+            for i, pt in enumerate(pitch_types):
+                color = PITCH_COLORS.get(pt, "#888")
+                with cols[i % n_cols]:
+                    st.markdown(
+                        f'<div style="height:5px;background:{color};border-radius:3px;margin-bottom:4px"></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.button(pt, key=f"demo_pt_{pt}", disabled=True, use_container_width=True)
+        else:
+            correct = pitch["pitch_type_label"]
+            st.success(f"That was a **{correct}**!", icon="✅")
+            if elapsed >= COUNTDOWN_S + 1.5:
+                _advance("swing_take")
+
+    elif phase == "swing_take":
+        st_autorefresh(interval=100, key="demo_st_refresh")
+        remaining = max(0.0, COUNTDOWN_S - elapsed)
+        correct   = pitch["pitch_type_label"]
+        st.markdown(f"**Step 3 — Swing or Take?** You called it a {correct}. 3 seconds to decide.")
+        if remaining > 0:
+            st.progress(remaining / COUNTDOWN_S, text=f"⏱ {remaining:.1f}s")
+            c1, c2 = st.columns(2)
+            c1.button("🪃 Swing", disabled=True, use_container_width=True)
+            c2.button("🤚 Take",  disabled=True, use_container_width=True)
+        else:
+            in_zone = pitch["zone"] == "in_zone"
+            call    = "SWING" if in_zone else "TAKE"
+            reason  = "it's in the zone — make contact!" if in_zone else "it's a ball — let it go!"
+            st.success(f"Correct call: **{call}** — {reason}", icon="✅")
+            if elapsed >= COUNTDOWN_S + 1.5:
+                _advance("result")
+
+    elif phase == "result":
+        in_zone          = pitch["zone"] == "in_zone"
+        correct_decision = True  # demo always shows the right call
+        components.html(_canvas_html(pitch, "reveal", correct_decision), height=470)
+        st.markdown("**Step 4 — See the result.** The zone box and landing dot appear after your decision.")
+        st.info(
+            "Each pitch is real tracking data. Correct reads add up — earn a **walk** "
+            "with 4 balls, **put the ball in play** with a correct swing on a strike, "
+            "or **strike out** after 3 misses."
+        )
+        if st.button("Got it — face your pitcher →", type="primary"):
+            st.session_state.phase = "pitcher_select"
+            st.rerun()
+
+
 def render_start():
-    st.title("Guess the Pitch")
-    st.markdown(
-        "Step in against a real pitcher from the SMT tracking dataset. "
-        "Watch each pitch travel to the plate, then identify the pitch type "
-        "and decide whether to Swing or Take — you have **3 seconds** for each. "
-        "Work the count: earn a walk with 4 correct takes, put the ball in play "
-        "by correctly reading a strike and swinging, or strike out after 3 misses."
-    )
+    st.title("Your Pitcher")
 
     eligible = load_eligible_pitchers()
     pitcher_id = random.choice(eligible)
@@ -300,25 +508,35 @@ def render_start():
     pitcher_arsenal = arsenal[arsenal["pitcher"] == pitcher_id].sort_values(
         "usage_pct", ascending=False
     )
+    throws = pitcher_arsenal["throws"].iloc[0]
+    total  = pitcher_arsenal["total_pitches"].iloc[0]
+    n_types = len(pitcher_arsenal)
+    hand_label = "RHP" if throws == "R" else "LHP"
 
-    st.subheader(f"Today's pitcher: `{pitcher_id}`")
-    st.markdown(f"**{pitcher_arsenal['total_pitches'].iloc[0]} pitches tracked this season.**")
+    st.markdown(
+        f"**{hand_label}** · {total} pitches tracked · {n_types} pitch types"
+    )
 
-    rows = []
-    for _, r in pitcher_arsenal.iterrows():
-        rows.append({
-            "Pitch": r["pitch_type_label"],
-            "Usage": f"{r['usage_pct']*100:.0f}%",
-            "Avg Velo": f"{r['avg_release_speed_mph']:.1f} mph",
-            "Avg IVB": f"{r['avg_ivb_in']:+.1f} in",
-            "Avg HB": f"{r['avg_hb_in']:+.1f} in",
-        })
-    st.table(rows)
+    pool = load_pitcher_pools()[pitcher_id]
+    components.html(_arsenal_canvas_html(pool), height=470)
 
-    col1, col2 = st.columns(2)
-    if col1.button("⚾ Face This Pitcher", type="primary", use_container_width=True):
+    # Compact stats row beneath the canvas
+    cols = st.columns(n_types)
+    for col, (_, r) in zip(cols, pitcher_arsenal.iterrows()):
+        color = PITCH_COLORS.get(r["pitch_type_label"], "#888")
+        col.markdown(
+            f'<div style="border-left:4px solid {color};padding-left:6px;">'
+            f'<b>{r["pitch_type_label"]}</b><br>'
+            f'{r["usage_pct"]*100:.0f}% · {r["avg_release_speed_mph"]:.0f} mph'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+    c1, c2 = st.columns(2)
+    if c1.button("⚾ Face This Pitcher", type="primary", use_container_width=True):
         init_game(pitcher_id)
-    if col2.button("🔀 Pick Different Pitcher", use_container_width=True):
+    if c2.button("🔀 Pick Different Pitcher", use_container_width=True):
         st.rerun()
 
 
@@ -358,13 +576,21 @@ def render_pitch_type():
     _show_count()
     st.progress(remaining / COUNTDOWN_S, text=f"⏱ {remaining:.1f}s")
 
-    cols = st.columns(min(len(pitch_types), 3))
+    n_cols = min(len(pitch_types), 3)
+    cols = st.columns(n_cols)
     for i, pt in enumerate(pitch_types):
-        if cols[i % 3].button(pt, key=f"pt_{pt}", use_container_width=True):
-            st.session_state.id_guess = pt
-            st.session_state.phase = "swing_take"
-            st.session_state.phase_start = time.time()
-            st.rerun()
+        color = PITCH_COLORS.get(pt, "#888")
+        with cols[i % n_cols]:
+            st.markdown(
+                f'<div style="height:5px;background:{color};'
+                f'border-radius:3px;margin-bottom:4px"></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(pt, key=f"pt_{pt}", use_container_width=True):
+                st.session_state.id_guess = pt
+                st.session_state.phase = "swing_take"
+                st.session_state.phase_start = time.time()
+                st.rerun()
 
 
 def render_swing_take():
@@ -477,28 +703,45 @@ def render_results():
                 f"{st_correct/n*100:.0f}%")
     col3.metric("Final Count", f"{balls}B - {strikes}S")
 
-    rows = []
+    def _badge(label):
+        c = PITCH_COLORS.get(label, "#888")
+        return (f'<span style="background:{c};color:#fff;padding:2px 7px;'
+                f'border-radius:4px;font-size:12px;font-weight:600">{label}</span>')
+
+    table_html = (
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+        '<thead><tr>' +
+        "".join(f'<th style="text-align:left;padding:4px 8px;border-bottom:1px solid #444">{h}</th>'
+                for h in ["#", "Pitch", "Guessed", "ID", "Velo", "Zone", "Decision", "S/T", "Outcome"]) +
+        "</tr></thead><tbody>"
+    )
     for i, h in enumerate(history):
         id_mark = "✅" if h["correct_id"] else "❌"
         st_mark = "✅" if h["outcome"] in ("ball", "in_play") else "❌"
-        rows.append({
-            "#": i + 1,
-            "Actual Pitch": h["pitch_type_label"],
-            "Your Guess": h["id_guess"] or "timeout",
-            "ID": id_mark,
-            "Velo": f"{h['release_speed_mph']:.0f} mph",
-            "Zone": "Strike" if h["zone"] == "in_zone" else "Ball",
-            "Decision": h["swing_take"] or "timeout",
-            "S/T": st_mark,
-            "Outcome": h["outcome"].replace("_", " ").title(),
-        })
-    st.table(rows)
+        cells = [
+            str(i + 1),
+            _badge(h["pitch_type_label"]),
+            _badge(h["id_guess"]) if h["id_guess"] else "<i>timeout</i>",
+            id_mark,
+            f"{h['release_speed_mph']:.0f} mph",
+            "Strike" if h["zone"] == "in_zone" else "Ball",
+            h["swing_take"] or "<i>timeout</i>",
+            st_mark,
+            h["outcome"].replace("_", " ").title(),
+        ]
+        table_html += "<tr>" + "".join(
+            f'<td style="padding:4px 8px;border-bottom:1px solid #333">{c}</td>'
+            for c in cells
+        ) + "</tr>"
+    table_html += "</tbody></table>"
+    st.markdown(table_html, unsafe_allow_html=True)
 
     if st.button("Play Again", type="primary"):
         for key in ["pitcher_id", "pitch_pool", "pitch_idx", "phase",
                     "balls", "strikes", "history", "id_guess", "swing_take",
                     "last_outcome", "last_correct_id", "phase_start"]:
             st.session_state.pop(key, None)
+        st.session_state.phase = "pitcher_select"
         st.rerun()
 
 
@@ -510,6 +753,8 @@ def main():
     phase = st.session_state.get("phase")
 
     if phase is None:
+        render_demo()
+    elif phase == "pitcher_select":
         render_start()
     elif phase == "throw":
         render_throw()
