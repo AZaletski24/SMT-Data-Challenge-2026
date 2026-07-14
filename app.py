@@ -330,6 +330,8 @@ def _next_pitch():
     st.session_state.phase = "throw"
     st.session_state.id_guess = None
     st.session_state.swing_take = None
+    pitch = st.session_state.pitch_pool[st.session_state.pitch_idx]
+    st.session_state.throw_html = _canvas_html(pitch, "throw")
 
 
 def _record(pitch: dict, id_guess: str | None, swing_take: str):
@@ -360,6 +362,8 @@ def _record(pitch: dict, id_guess: str | None, swing_take: str):
     st.session_state.last_outcome = outcome
     st.session_state.last_correct_id = correct_id
     st.session_state.phase = "at_bat_over" if at_bat_over else "revealed"
+    correct_decision = (outcome == "in_play") if at_bat_over else (outcome in ("ball", "in_play"))
+    st.session_state.reveal_html = _canvas_html(pitch, "reveal", correct_decision)
     st.rerun()
 
 
@@ -382,6 +386,8 @@ def init_game(pitcher_id: str):
     st.session_state.swing_take = None
     st.session_state.last_outcome = None
     st.session_state.last_correct_id = None
+    st.session_state.arsenal_html = _arsenal_canvas_html(pool)
+    st.session_state.throw_html = _canvas_html(pool[0], "throw")
     st.rerun()
 
 
@@ -425,11 +431,14 @@ def render_demo():
     """Auto-advancing tutorial. Only user input: clicking 'Got it' at the end."""
     if "demo_phase" not in st.session_state:
         pitch, pitch_types, pool = get_demo_content()
-        st.session_state.demo_phase       = "animation"
-        st.session_state.demo_pitch       = pitch
-        st.session_state.demo_types       = pitch_types
-        st.session_state.demo_pool        = pool
-        st.session_state.demo_phase_start = time.time()
+        st.session_state.demo_phase        = "animation"
+        st.session_state.demo_pitch        = pitch
+        st.session_state.demo_types        = pitch_types
+        st.session_state.demo_pool         = pool
+        st.session_state.demo_phase_start  = time.time()
+        st.session_state.demo_throw_html   = _canvas_html(pitch, "throw")
+        st.session_state.demo_arsenal_html = _arsenal_canvas_html(pool)
+        st.session_state.demo_reveal_html  = _canvas_html(pitch, "reveal", True)
 
     pitch       = st.session_state.demo_pitch
     pitch_types = st.session_state.demo_types
@@ -448,7 +457,7 @@ def render_demo():
         st_autorefresh(interval=100, key="demo_anim_refresh")
         col_canvas, col_info = st.columns([3, 2])
         with col_canvas:
-            components.html(_canvas_html(pitch, "throw"), height=620)
+            components.html(st.session_state.demo_throw_html, height=620)
         with col_info:
             st.markdown("### Step 1 — Watch the pitch fly in.")
             st.markdown(
@@ -463,7 +472,7 @@ def render_demo():
         remaining = max(0.0, COUNTDOWN_S - elapsed)
         col_canvas, col_info = st.columns([3, 2])
         with col_canvas:
-            components.html(_arsenal_canvas_html(pool), height=620)
+            components.html(st.session_state.demo_arsenal_html, height=620)
         with col_info:
             st.markdown("### Step 2 — Identify the pitch type.")
             st.markdown(
@@ -494,7 +503,7 @@ def render_demo():
         correct   = pitch["pitch_type_label"]
         col_canvas, col_info = st.columns([3, 2])
         with col_canvas:
-            components.html(_arsenal_canvas_html(pool), height=620)
+            components.html(st.session_state.demo_arsenal_html, height=620)
         with col_info:
             st.markdown("### Step 3 — Swing or Take?")
             st.markdown(
@@ -519,7 +528,7 @@ def render_demo():
         correct_decision = True  # demo always shows the right call
         col_canvas, col_info = st.columns([3, 2])
         with col_canvas:
-            components.html(_canvas_html(pitch, "reveal", correct_decision), height=620)
+            components.html(st.session_state.demo_reveal_html, height=620)
         with col_info:
             st.markdown("### Step 4 — See the result.")
             st.markdown(
@@ -582,7 +591,7 @@ def render_throw():
 
     col_canvas, col_controls = st.columns([3, 2])
     with col_canvas:
-        components.html(_canvas_html(pitch, "throw"), height=620)
+        components.html(st.session_state.throw_html, height=620)
     with col_controls:
         st.subheader(f"Pitch {n}")
         _show_count()
@@ -613,11 +622,10 @@ def render_pitch_type():
 
     st_autorefresh(interval=100, key="pt_refresh")
 
-    pool = load_pitcher_pools()[st.session_state.pitcher_id]
     col_canvas, col_controls = st.columns([3, 2])
 
     with col_canvas:
-        components.html(_arsenal_canvas_html(pool), height=620)
+        components.html(st.session_state.arsenal_html, height=620)
 
     with col_controls:
         st.subheader("What pitch was that?")
@@ -654,11 +662,10 @@ def render_swing_take():
 
     st_autorefresh(interval=100, key="st_refresh")
 
-    pool = load_pitcher_pools()[st.session_state.pitcher_id]
     col_canvas, col_controls = st.columns([3, 2])
 
     with col_canvas:
-        components.html(_arsenal_canvas_html(pool), height=620)
+        components.html(st.session_state.arsenal_html, height=620)
 
     with col_controls:
         id_guess = st.session_state.id_guess
@@ -683,12 +690,10 @@ def render_revealed():
     id_guess = st.session_state.history[-1]["id_guess"]
     swing_take = st.session_state.history[-1]["swing_take"]
 
-    correct_decision = (outcome == "ball" or outcome == "in_play")
-
     col_canvas, col_controls = st.columns([3, 2])
 
     with col_canvas:
-        components.html(_canvas_html(pitch, "reveal", correct_decision), height=620)
+        components.html(st.session_state.reveal_html, height=620)
 
     with col_controls:
         zone_label = "in the zone" if pitch["zone"] == "in_zone" else "out of the zone"
@@ -715,16 +720,13 @@ def render_revealed():
 
 def render_at_bat_over():
     pitch = st.session_state.pitch_pool[st.session_state.pitch_idx]
-    outcome = st.session_state.last_outcome
     correct_id = st.session_state.last_correct_id
     id_guess = st.session_state.history[-1]["id_guess"]
-
-    correct_decision = (outcome == "in_play")
 
     col_canvas, col_controls = st.columns([3, 2])
 
     with col_canvas:
-        components.html(_canvas_html(pitch, "reveal", correct_decision), height=620)
+        components.html(st.session_state.reveal_html, height=620)
 
     with col_controls:
         id_result = (
