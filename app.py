@@ -223,11 +223,12 @@ if (DATA.mode==='throw') {{
 </script>"""
 
 
-def _arsenal_canvas_html(pool: list) -> str:
+def _arsenal_canvas_html(pool: list, allowed_types: list[str] | None = None) -> str:
     """Static canvas showing one representative trajectory per pitch type,
     colour-coded by PITCH_COLORS. The representative is the pitch whose
-    plate landing (plate_x, plate_z) is closest to that type's centroid —
-    i.e. the most average example of what that pitch looks like."""
+    plate landing (plate_x, plate_z) is closest to that type's centroid.
+    allowed_types, when provided, restricts display to those types only —
+    keeping the canvas in sync with the pitcher's actual arsenal."""
     import json as _j
     import numpy as _np
 
@@ -239,6 +240,8 @@ def _arsenal_canvas_html(pool: list) -> str:
 
     arsenal_data = {}
     for pt, color in PITCH_COLORS.items():
+        if allowed_types is not None and pt not in allowed_types:
+            continue
         bucket = [p for p in pool if p["pitch_type_label"] == pt]
         if bucket:
             rep = _representative(bucket)
@@ -332,6 +335,8 @@ def _next_pitch():
     st.session_state.swing_take = None
     pitch = st.session_state.pitch_pool[st.session_state.pitch_idx]
     st.session_state.throw_html = _canvas_html(pitch, "throw")
+    st.session_state.replay_html = st.session_state.throw_html + "<!-- r -->"
+    st.session_state.replay_used = False
 
 
 def _record(pitch: dict, id_guess: str | None, swing_take: str):
@@ -386,8 +391,12 @@ def init_game(pitcher_id: str):
     st.session_state.swing_take = None
     st.session_state.last_outcome = None
     st.session_state.last_correct_id = None
-    st.session_state.arsenal_html = _arsenal_canvas_html(pool)
+    _arsenals = load_arsenals()
+    arsenal_types = _arsenals[_arsenals["pitcher"] == pitcher_id]["pitch_type_label"].tolist()
+    st.session_state.arsenal_html = _arsenal_canvas_html(pool, allowed_types=arsenal_types)
     st.session_state.throw_html = _canvas_html(pool[0], "throw")
+    st.session_state.replay_html = st.session_state.throw_html + "<!-- r -->"
+    st.session_state.replay_used = False
     st.rerun()
 
 
@@ -437,7 +446,7 @@ def render_demo():
         st.session_state.demo_pool         = pool
         st.session_state.demo_phase_start  = time.time()
         st.session_state.demo_throw_html   = _canvas_html(pitch, "throw")
-        st.session_state.demo_arsenal_html = _arsenal_canvas_html(pool)
+        st.session_state.demo_arsenal_html = _arsenal_canvas_html(pool, allowed_types=pitch_types)
         st.session_state.demo_reveal_html  = _canvas_html(pitch, "reveal", True)
 
     pitch       = st.session_state.demo_pitch
@@ -562,10 +571,11 @@ def render_start():
     hand_label = "RHP" if throws == "R" else "LHP"
 
     pool = load_pitcher_pools()[pitcher_id]
+    arsenal_types = pitcher_arsenal["pitch_type_label"].tolist()
 
     col_canvas, col_info = st.columns([3, 2])
     with col_canvas:
-        components.html(_arsenal_canvas_html(pool), height=620)
+        components.html(_arsenal_canvas_html(pool, allowed_types=arsenal_types), height=620)
     with col_info:
         st.markdown(
             f"**{hand_label}** · {total} pitches tracked · {n_types} pitch types"
@@ -586,12 +596,13 @@ def render_start():
 
 
 def render_throw():
-    pitch = st.session_state.pitch_pool[st.session_state.pitch_idx]
     n = len(st.session_state.history) + 1
+    replay_used = st.session_state.get("replay_used", False)
 
     col_canvas, col_controls = st.columns([3, 2])
     with col_canvas:
-        components.html(st.session_state.throw_html, height=620)
+        html = st.session_state.replay_html if replay_used else st.session_state.throw_html
+        components.html(html, height=620)
     with col_controls:
         st.subheader(f"Pitch {n}")
         _show_count()
@@ -600,6 +611,11 @@ def render_throw():
             st.session_state.phase = "pitch_type"
             st.session_state.phase_start = time.time()
             st.rerun()
+        if not replay_used:
+            st.write("")
+            if st.button("🔄 Replay", use_container_width=True):
+                st.session_state.replay_used = True
+                st.rerun()
 
 
 def render_pitch_type():
